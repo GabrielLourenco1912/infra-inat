@@ -1,35 +1,54 @@
 services:
-
   mysql:
     image: mysql:8.0
-    container_name: wms-saas-mysql
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
-    expose:
-      - "3306"
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Defina DB_ROOT_PASSWORD no arquivo .env}
+      MYSQL_DATABASE: ${DB_NAME:-inat_ead}
+      MYSQL_USER: ${DB_USERNAME:-inat_ead}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no arquivo .env}
     volumes:
       - db_data:/var/lib/mysql
-    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=\"$${MYSQL_PASSWORD}\" mysql --protocol=TCP -h 127.0.0.1 -u \"$${MYSQL_USER}\" \"$${MYSQL_DATABASE}\" --execute=\"SELECT 1\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   backend:
-    user: "1001:1001"
     build:
-      context: ./wms-saas-backend
-      dockerfile: ../docker/backend/Dockerfile
-    container_name: wms-saas-backend
-    expose:
-      - "8080"
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${BACKEND_PORT:-8080}:8080"
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     environment:
-      API_SECURITY_JWT_SECRET: ${JWT_SECRET}
-      SPRING_DATASOURCE_URL: jdbc:mysql://${DB_HOST}:${DB_PORT}/${DB_NAME}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
-      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
-      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
-    restart: on-failure
+      API_SECURITY_JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no arquivo .env}
+      API_SECURITY_JWT_ISSUER: ${JWT_ISSUER:?Defina JWT_ISSUER no arquivo .env}
+      API_SECURITY_REFRESH_COOKIE_SECURE: ${API_SECURITY_REFRESH_COOKIE_SECURE:-true}
+      SERVER_PORT: ${BACKEND_PORT:-8080}
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${DB_NAME:-inat_ead}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-inat_ead}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no arquivo .env}
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${NEXT_PUBLIC_INTERNAL_SYSTEM_URL:-}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
 
 volumes:
   db_data:

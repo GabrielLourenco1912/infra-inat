@@ -1,20 +1,24 @@
+# syntax=docker/dockerfile:1
+
 FROM maven:3.9-eclipse-temurin-21 AS builder
 
-WORKDIR /var/www/html
+WORKDIR /app
 
-COPY pom.xml .
-RUN mvn dependency:go-offline -B
+COPY backend/pom.xml ./pom.xml
+RUN mvn --batch-mode --no-transfer-progress dependency:go-offline
 
-COPY src ./src
-RUN mvn clean package -DskipTests
+COPY backend/src ./src
+RUN mvn --batch-mode --no-transfer-progress package -DskipTests
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre AS runtime
 
-WORKDIR /var/www/html
+WORKDIR /app
 
-COPY --from=builder /var/www/html/target/*.jar app.jar
+RUN groupadd --system --gid 1001 spring \
+    && useradd --system --uid 1001 --gid spring --create-home spring
 
-RUN useradd -u 1001 -m springuser
+COPY --from=builder --chown=1001:1001 /app/target/*.jar ./app.jar
+
 USER 1001:1001
 
 EXPOSE 8080
