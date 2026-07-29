@@ -1,3 +1,6 @@
-[submodule "wms-saas-backend"]
-	path = wms-saas-backend
+[submodule "backend"]
+	path = backend
 	url = git@github.com:GabrielLourenco1912/backend-inat.git
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:GabrielLourenco1912/frontend-inat.git
