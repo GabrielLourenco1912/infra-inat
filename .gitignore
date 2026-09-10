@@ -7,6 +7,7 @@
 *.jks
 *.keystore
 **/key.properties
+docs/
 
 # IDEs and local tooling
 .idea/
@@ -37,6 +38,7 @@ Desktop.ini
 *.swo
 *.bak
 *~
+/data/files/
 
 # Java / Maven
 **/target/
@@ -79,3 +81,4 @@ wms_saas_mobile/**/flutter/ephemeral/
 wms_saas_mobile/**/Pods/
 wms_saas_mobile/**/DerivedData/
 wms_saas_mobile/**/xcuserdata/
+mobile
