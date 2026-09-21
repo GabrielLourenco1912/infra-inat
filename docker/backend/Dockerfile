@@ -14,8 +14,8 @@ FROM eclipse-temurin:21-jre AS runtime
 
 WORKDIR /app
 
-RUN groupadd --system --gid 1001 spring \
-    && useradd --system --uid 1001 --gid spring --create-home spring \
+RUN groupadd --gid 1001 spring \
+    && useradd --uid 1001 --gid spring --create-home --shell /usr/sbin/nologin spring \
     && mkdir -p /var/lib/inat/files \
     && chown -R 1001:1001 /var/lib/inat
 
