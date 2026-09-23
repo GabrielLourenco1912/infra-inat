@@ -43,6 +43,7 @@ services:
       SPRING_JPA_SHOW_SQL: ${SPRING_JPA_SHOW_SQL:-false}
       EMAIL: ${EMAIL:?Defina EMAIL no arquivo .env}
       EMAIL_PASS: ${EMAIL_PASS:?Defina EMAIL_PASS no arquivo .env}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:3000}
       SMTP_HOST: ${SMTP_HOST:-smtp.hostinger.com}
       SMTP_PORT: ${SMTP_PORT:-465}
       SMTP_SSL_ENABLED: ${SMTP_SSL_ENABLED:-true}
