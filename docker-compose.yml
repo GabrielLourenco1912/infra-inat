@@ -95,7 +95,6 @@ services:
       - backend
     environment:
       BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8080}
-      REGULATION_URL: ${REGULATION_URL:-}
       FRONTEND_AUTH_COOKIE_SECURE: ${FRONTEND_AUTH_COOKIE_SECURE:-}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
