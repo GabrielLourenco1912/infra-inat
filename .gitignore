@@ -9,6 +9,10 @@
 **/key.properties
 docs/
 
+# Local research and import workbooks
+/planilhas_mapeadas/
+/scripts/
+
 # IDEs and local tooling
 .idea/
 .vscode/
