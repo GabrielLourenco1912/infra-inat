@@ -27,8 +27,6 @@ services:
       context: .
       dockerfile: docker/backend/Dockerfile
     restart: unless-stopped
-    ports:
-      - "${BACKEND_PORT:-8080}:8080"
     depends_on:
       mysql:
         condition: service_healthy
@@ -99,7 +97,7 @@ services:
       BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8080}
       FRONTEND_AUTH_COOKIE_SECURE: ${FRONTEND_AUTH_COOKIE_SECURE:-}
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
 
 volumes:
   db_data:
