@@ -26,6 +26,7 @@ services:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
+    image: ghcr.io/gabriellourenco1912/inat-back
     restart: unless-stopped
     depends_on:
       mysql:
@@ -89,6 +90,7 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-22}
         NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${NEXT_PUBLIC_INTERNAL_SYSTEM_URL:-}
+    image: ghcr.io/gabriellourenco1912/inat-front
     restart: unless-stopped
     init: true
     depends_on:
