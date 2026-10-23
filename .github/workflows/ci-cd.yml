@@ -22,15 +22,19 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 # Configure no repositório principal:
-# - SUBMODULES_TOKEN: token com Contents: read no repositório principal e nos
-#   submódulos privados (backend, frontend e mobile).
-# - GHCR_TOKEN (opcional): token com read:packages/write:packages caso os pacotes
-#   existentes não concedam acesso ao GITHUB_TOKEN deste repositório.
+# - APP_ID: variável com o ID da GitHub App.
+# - APP_PRIVATE_KEY: secret com o conteúdo completo da chave privada PEM da app.
+# A app deve ter Contents: read e estar instalada no repositório principal e nos
+# submódulos backend-inat, frontend-inat e mobile-inat da mesma organização.
+# Cada job gera seu próprio token de instalação para o checkout.
+# O push no GHCR e o pull na VPS usam o GITHUB_TOKEN temporário de cada job,
+# com packages: write na publicação e packages: read no deploy.
+# Os pacotes devem estar vinculados a este repositório ou conceder acesso a ele
+# em Manage Actions access. O token da app própria é usado apenas no checkout.
 # - SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS e DEPLOY_PATH: secrets da VPS.
 # - SSH_PORT (opcional): secret; padrão 22.
 # - DEPLOY_ENABLED: variável com "true" para habilitar o deploy automático.
 # - NEXT_PUBLIC_INTERNAL_SYSTEM_URL (opcional): variável usada no build do Next.js.
-# - GHCR_USERNAME (opcional): variável para o titular de GHCR_TOKEN.
 # A VPS deve ter Docker/Compose, acesso ao Docker para SSH_USER e um .env em
 # DEPLOY_PATH, preenchido conforme .env.example. A chave SSH deve ser dedicada
 # ao deploy, sem passphrase; SSH_KNOWN_HOSTS contém a entrada completa do
@@ -48,11 +52,25 @@ jobs:
       run:
         working-directory: backend
     steps:
+      - name: Gerar token da GitHub App para os submódulos
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            backend-inat
+            frontend-inat
+            mobile-inat
+          permission-contents: read
+
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
       - name: Configurar Java
@@ -76,11 +94,25 @@ jobs:
     env:
       NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${{ vars.NEXT_PUBLIC_INTERNAL_SYSTEM_URL }}
     steps:
+      - name: Gerar token da GitHub App para os submódulos
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            backend-inat
+            frontend-inat
+            mobile-inat
+          permission-contents: read
+
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
       - name: Configurar Node
@@ -125,11 +157,25 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Gerar token da GitHub App para os submódulos
+        id: app-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            backend-inat
+            frontend-inat
+            mobile-inat
+          permission-contents: read
+
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
       - name: Configurar Buildx
@@ -139,8 +185,8 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
-          username: ${{ vars.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || github.token }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Publicar backend
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -206,8 +252,8 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-      GHCR_USERNAME: ${{ vars.GHCR_USERNAME || github.actor }}
-      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout do Compose
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
