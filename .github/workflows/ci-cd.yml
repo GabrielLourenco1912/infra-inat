@@ -1,0 +1,301 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "22"
+  BACKEND_IMAGE: ghcr.io/gabriellourenco1912/inat-back
+  FRONTEND_IMAGE: ghcr.io/gabriellourenco1912/inat-front
+  BACKUP_IMAGE: ghcr.io/gabriellourenco1912/inat-mysql-backup
+  NEXT_TELEMETRY_DISABLED: "1"
+
+# Configure no repositório principal:
+# - SUBMODULES_TOKEN: token com Contents: read no repositório principal e nos
+#   submódulos privados (backend, frontend e mobile).
+# - GHCR_TOKEN (opcional): token com read:packages/write:packages caso os pacotes
+#   existentes não concedam acesso ao GITHUB_TOKEN deste repositório.
+# - SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS e DEPLOY_PATH: secrets da VPS.
+# - SSH_PORT (opcional): secret; padrão 22.
+# - DEPLOY_ENABLED: variável com "true" para habilitar o deploy automático.
+# - NEXT_PUBLIC_INTERNAL_SYSTEM_URL (opcional): variável usada no build do Next.js.
+# - GHCR_USERNAME (opcional): variável para o titular de GHCR_TOKEN.
+# A VPS deve ter Docker/Compose, acesso ao Docker para SSH_USER e um .env em
+# DEPLOY_PATH, preenchido conforme .env.example. A chave SSH deve ser dedicada
+# ao deploy, sem passphrase; SSH_KNOWN_HOSTS contém a entrada completa do
+# known_hosts da VPS (host e chave pública).
+# Configure também o backup no mesmo .env, com modo 0600, conforme
+# docker/mysql-backup/README.md. Não há um segundo arquivo de configuração.
+# O diretório de artefatos MYSQL_BACKUP_HOST_DIR é criado pelo bind mount no deploy.
+
+jobs:
+  backend:
+    name: Backend · Java 21
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout dos commits dos submódulos
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Configurar Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Testes e pacote
+        run: mvn --batch-mode --no-transfer-progress verify
+
+  frontend:
+    name: Frontend · Node 22
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${{ vars.NEXT_PUBLIC_INTERNAL_SYSTEM_URL }}
+    steps:
+      - name: Checkout dos commits dos submódulos
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Configurar Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Testes
+        run: npm test
+
+      - name: Build e verificação de TypeScript
+        run: npm run build
+
+  mysql-backup:
+    name: MySQL · Backup e restauração
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout dos scripts de infraestrutura
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Validar backup e restauração em MySQL descartável
+        run: bash docker/mysql-backup/tests/integration.sh
+
+  images:
+    name: Publicar imagens no GHCR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    needs: [backend, frontend, mysql-backup]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout dos commits dos submódulos
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Configurar Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Autenticar no GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ vars.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || github.token }}
+
+      - name: Publicar backend
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:sha-${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Publicar frontend
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/frontend/Dockerfile
+          push: true
+          build-args: |
+            NODE_VERSION=${{ env.NODE_VERSION }}
+            NEXT_PUBLIC_INTERNAL_SYSTEM_URL=${{ vars.NEXT_PUBLIC_INTERNAL_SYSTEM_URL }}
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:sha-${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Publicar backup MySQL
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ./docker/mysql-backup
+          file: docker/mysql-backup/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKUP_IMAGE }}:sha-${{ github.sha }}
+            ${{ env.BACKUP_IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=mysql-backup
+          cache-to: type=gha,scope=mysql-backup,mode=max
+
+  deploy:
+    name: Deploy na VPS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: images
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      GHCR_USERNAME: ${{ vars.GHCR_USERNAME || github.actor }}
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || github.token }}
+    steps:
+      - name: Checkout do Compose
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Atualizar containers por SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          for setting in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS DEPLOY_PATH; do
+            if [[ -z "${!setting}" ]]; then
+              echo "Configure o secret $setting antes de habilitar DEPLOY_ENABLED." >&2
+              exit 1
+            fi
+          done
+          [[ "$DEPLOY_PATH" = /* ]] || { echo "DEPLOY_PATH deve ser um caminho absoluto." >&2; exit 1; }
+
+          deploy_local=$(mktemp -d)
+          deploy_remote=""
+          cleanup() {
+            if [[ -n "$deploy_remote" ]]; then
+              ssh "${ssh_options[@]}" "$ssh_target" "rm -rf -- $deploy_remote_quoted" || true
+            fi
+            rm -rf -- "$deploy_local"
+          }
+          trap cleanup EXIT
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$deploy_local/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$deploy_local/known_hosts"
+          chmod 600 "$deploy_local/key" "$deploy_local/known_hosts"
+          ssh_options=(-i "$deploy_local/key" -p "$SSH_PORT"
+            -o "UserKnownHostsFile=$deploy_local/known_hosts" -o StrictHostKeyChecking=yes
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=20)
+          ssh_target="$SSH_USER@$SSH_HOST"
+
+          cp docker-compose.yml "$deploy_local/docker-compose.yml"
+          printf 'services:\n  backend:\n    image: %s:sha-%s\n  frontend:\n    image: %s:sha-%s\n  mysql-backup:\n    image: %s:sha-%s\n' \
+            "$BACKEND_IMAGE" "$GITHUB_SHA" "$FRONTEND_IMAGE" "$GITHUB_SHA" "$BACKUP_IMAGE" "$GITHUB_SHA" \
+            > "$deploy_local/docker-compose.release.yml"
+          tar -czf "$deploy_local/release.tar.gz" -C "$deploy_local" \
+            docker-compose.yml docker-compose.release.yml
+
+          deploy_remote_candidate=$(ssh "${ssh_options[@]}" "$ssh_target" 'mktemp -d /tmp/inat-deploy.XXXXXXXX')
+          [[ "$deploy_remote_candidate" =~ ^/tmp/inat-deploy\.[[:alnum:]]+$ ]] || exit 1
+          printf -v deploy_remote_quoted '%q' "$deploy_remote_candidate"
+          deploy_remote=$deploy_remote_candidate
+          ssh "${ssh_options[@]}" "$ssh_target" "cat > $deploy_remote_quoted/release.tar.gz" \
+            < "$deploy_local/release.tar.gz"
+
+          printf -v registry_user_quoted '%q' "$GHCR_USERNAME"
+          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" "$ssh_target" \
+            "DOCKER_CONFIG=$deploy_remote_quoted/docker docker login ghcr.io --username $registry_user_quoted --password-stdin"
+
+          printf -v deploy_command 'bash -s -- %q %q' "$DEPLOY_PATH" "$deploy_remote"
+          ssh "${ssh_options[@]}" "$ssh_target" "$deploy_command" <<'REMOTE'
+          set -euo pipefail
+          deploy_path=$1
+          deploy_remote=$2
+          trap 'rm -rf -- "$deploy_remote"' EXIT
+          export DOCKER_CONFIG="$deploy_remote/docker"
+          cd "$deploy_path"
+          test -f .env || { echo "Crie o .env da aplicação em DEPLOY_PATH." >&2; exit 1; }
+          chmod go-rwx .env
+          tar -xzf "$deploy_remote/release.tar.gz" --no-same-owner
+          compose=(docker compose --env-file .env -f docker-compose.yml -f docker-compose.release.yml)
+          "${compose[@]}" config --quiet
+          "${compose[@]}" pull backend frontend mysql-backup
+          # Confere as variáveis do .env e o bind mount usando a imagem publicada,
+          # antes de atualizar os containers. Não conecta nem altera o banco.
+          "${compose[@]}" run --rm --no-deps mysql-backup check
+          "${compose[@]}" up --detach --no-build --wait --wait-timeout 180
+
+          # O Node já está na imagem do frontend; a sondagem não exige curl na VPS.
+          for attempt in $(seq 1 30); do
+            if "${compose[@]}" exec -T frontend node -e '
+              Promise.all([
+                fetch("http://127.0.0.1:3000/", { signal: AbortSignal.timeout(5000) }).then(r => r.ok),
+                fetch("http://backend:8080/api/roles", { signal: AbortSignal.timeout(5000) }).then(r => [200, 401, 403].includes(r.status))
+              ]).then(results => process.exit(results.every(Boolean) ? 0 : 1)).catch(() => process.exit(1));
+            '; then
+              "${compose[@]}" ps
+              exit 0
+            fi
+            echo "Aguardando frontend e backend ($attempt/30)..."
+            sleep 5
+          done
+          "${compose[@]}" ps
+          echo "Frontend ou backend não respondeu após a atualização." >&2
+          exit 1
+          REMOTE
