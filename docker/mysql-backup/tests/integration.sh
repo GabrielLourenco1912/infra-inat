@@ -73,7 +73,7 @@ printf 'Building isolated backup image...\n'
 default_services=$(COMPOSE_PROFILES= docker compose --env-file "$project_root/.env.example" -f "$project_root/docker-compose.yml" config --services)
 grep -qx mysql-backup <<<"$default_services"
 default_images=$(COMPOSE_PROFILES= docker compose --env-file "$project_root/.env.example" -f "$project_root/docker-compose.yml" config --images)
-grep -qx ghcr.io/gabriellourenco1912/inat-mysql-backup <<<"$default_images"
+grep -qx ghcr.io/inat-instituto-nacional-do-trabalhador/inat-mysql-backup <<<"$default_images"
 pass 'default Compose includes backup service and GHCR image without a profile'
 docker build --quiet --tag "$MYSQL_BACKUP_TEST_IMAGE" "$backup_dir" >/dev/null
 # Cron refuses a crontab owned by an unprivileged host user.

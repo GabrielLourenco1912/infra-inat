@@ -93,7 +93,7 @@ conforme a seção de restauração.
 ## Deploy e agendamento
 
 O CI executa o teste de integração antes da publicação. O workflow publica
-`ghcr.io/gabriellourenco1912/inat-mysql-backup` com tags `latest` e
+`ghcr.io/inat-instituto-nacional-do-trabalhador/inat-mysql-backup` com tags `latest` e
 `sha-<commit>`, junto das imagens de backend e frontend. O release fixa as três
 imagens no mesmo commit. No servidor, o deploy baixa as imagens, executa
 `mysql-backup check` e inicia o Compose com `--no-build --wait`.

@@ -23,7 +23,7 @@ services:
   mysql-backup:
     build:
       context: ./docker/mysql-backup
-    image: ghcr.io/gabriellourenco1912/inat-mysql-backup
+    image: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-mysql-backup
     restart: unless-stopped
     init: true
     read_only: true
@@ -73,7 +73,7 @@ services:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
-    image: ghcr.io/gabriellourenco1912/inat-back
+    image: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-back
     restart: unless-stopped
     depends_on:
       mysql:
@@ -137,7 +137,7 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-22}
         NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${NEXT_PUBLIC_INTERNAL_SYSTEM_URL:-}
-    image: ghcr.io/gabriellourenco1912/inat-front
+    image: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-front
     restart: unless-stopped
     init: true
     depends_on:
