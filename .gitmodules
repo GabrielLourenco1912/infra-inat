@@ -1,9 +1,9 @@
 [submodule "backend"]
 	path = backend
-	url = git@github.com:INAT-Instituto-Nacional-do-Trabalhador/backend-inat.git
+	url = git@github.com:GabrielLourenco1912/backend-inat.git
 [submodule "frontend"]
 	path = frontend
-	url = git@github.com:INAT-Instituto-Nacional-do-Trabalhador/frontend-inat.git
+	url = git@github.com:GabrielLourenco1912/frontend-inat.git
 [submodule "mobile"]
 	path = mobile
-	url = git@github.com:INAT-Instituto-Nacional-do-Trabalhador/mobile-inat.git
+	url = git@github.com:GabrielLourenco1912/mobile-inat.git
