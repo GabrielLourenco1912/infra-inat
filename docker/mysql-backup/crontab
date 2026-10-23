@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+
+# Uses /etc/localtime, bind-mounted from the host. No CRON_TZ/TZ override.
+15 2 * * * root /usr/local/bin/mysql-backup cron-backup >/proc/1/fd/1 2>/proc/1/fd/2

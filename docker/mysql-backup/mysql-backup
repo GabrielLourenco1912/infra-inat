@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Do not enable xtrace: configuration and SQL can contain secrets/data.
+set +x
+set -Eeuo pipefail
+umask 077
+
+operation=${1:-schedule}
+work_dir=
+partial_file=
+failure_message="operation failed"
+
+log() {
+    printf '%s [%s] %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$operation" "$2" >&2
+}
+
+die() {
+    failure_message=$1
+    exit "${2:-1}"
+}
+
+cleanup() {
+    local status=$?
+    trap - EXIT
+    set +e
+    [[ -z "$partial_file" ]] || rm -f -- "$partial_file"
+    [[ -z "$work_dir" ]] || rm -rf -- "$work_dir"
+    if (( status != 0 )); then
+        log ERROR "$failure_message (exit=$status)"
+    fi
+    # FD 9 is closed on exit. Never unlink the lock file: other processes use its inode.
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'failure_message="interrupted"; exit 130' INT
+trap 'failure_message="terminated"; exit 143' TERM HUP
+
+database_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_]+$ && ${#1} -le 64 ]] || die "database names must contain 1-64 letters, digits or underscores"
+    case "${1,,}" in
+        mysql|sys|information_schema|performance_schema) die "system databases are not allowed" ;;
+    esac
+}
+
+load_config() {
+    # Compose supplies selected settings from the project's .env. No source/eval.
+    MYSQL_DATABASE=${MYSQL_BACKUP_DATABASE:-}
+    MYSQL_BACKUP_HOST=${MYSQL_BACKUP_HOST:-mysql}
+    MYSQL_BACKUP_PORT=${MYSQL_BACKUP_PORT:-3306}
+    MYSQL_BACKUP_USERNAME=${MYSQL_BACKUP_USERNAME:-}
+    MYSQL_BACKUP_PASSWORD=${MYSQL_BACKUP_PASSWORD:-}
+    MYSQL_RESTORE_HOST=${MYSQL_RESTORE_HOST:-$MYSQL_BACKUP_HOST}
+    MYSQL_RESTORE_PORT=${MYSQL_RESTORE_PORT:-$MYSQL_BACKUP_PORT}
+    MYSQL_RESTORE_USERNAME=${MYSQL_RESTORE_USERNAME:-$MYSQL_BACKUP_USERNAME}
+    MYSQL_RESTORE_PASSWORD=${MYSQL_RESTORE_PASSWORD:-$MYSQL_BACKUP_PASSWORD}
+    BACKUP_DIR=${MYSQL_BACKUP_DIR:-/backups}
+    RETENTION_DAYS=${MYSQL_BACKUP_RETENTION_DAYS:-30}
+    database_name "$MYSQL_DATABASE"
+    [[ -n "$MYSQL_BACKUP_USERNAME" && -n "$MYSQL_BACKUP_PASSWORD" ]] || die "backup username and password must be set in .env"
+    valid_port "$MYSQL_BACKUP_PORT"
+    valid_port "$MYSQL_RESTORE_PORT"
+    [[ "$BACKUP_DIR" == /* && "$BACKUP_DIR" != / ]] || die "BACKUP_DIR must be an absolute directory other than /"
+    [[ "$RETENTION_DAYS" =~ ^[0-9]{1,5}$ ]] || die "RETENTION_DAYS must be an integer from 30 to 36500"
+    RETENTION_DAYS=$((10#$RETENTION_DAYS))
+    (( RETENTION_DAYS >= 30 && RETENTION_DAYS <= 36500 )) || die "RETENTION_DAYS must be at least 30 and at most 36500"
+    [[ -d "$BACKUP_DIR" && ! -L "$BACKUP_DIR" && -w "$BACKUP_DIR" ]] \
+        || die "BACKUP_DIR must already exist and be writable (check the host bind mount)"
+    chmod 0700 -- "$BACKUP_DIR"
+}
+
+valid_port() {
+    [[ "$1" =~ ^[0-9]{1,5}$ ]] || die "MySQL port must be an integer from 1 to 65535"
+    (( 10#$1 >= 1 && 10#$1 <= 65535 )) || die "MySQL port must be an integer from 1 to 65535"
+}
+
+lock_operation() {
+    failure_message="unable to open backup lock"
+    [[ ! -L "$BACKUP_DIR/.mysql-backup.lock" ]] || die "lock file must not be a symlink"
+    exec 9>"$BACKUP_DIR/.mysql-backup.lock"
+    flock --nonblock 9 || die "another backup or restore holds the lock" 75
+    work_dir=$(mktemp -d /tmp/mysql-backup.XXXXXXXX)
+}
+
+query() {
+    # Never forward raw client stderr: it can contain SQL, user names or data.
+    MYSQL_PWD="$MYSQL_RESTORE_PASSWORD" mysql --no-defaults --protocol=TCP \
+        --host="$MYSQL_RESTORE_HOST" --port="$MYSQL_RESTORE_PORT" --user="$MYSQL_RESTORE_USERNAME" \
+        --connect-timeout=10 --batch --skip-column-names \
+        --execute="$1" 2>"$work_dir/client.err"
+}
+
+prune_backups() {
+    local file name modified cutoff removed=0
+    cutoff=$(date -u --date="$RETENTION_DAYS days ago" +%s)
+    while IFS= read -r -d '' file; do
+        name=${file##*/}
+        # Delete only this tool's completed archives for this exact database.
+        [[ "$name" =~ ^${MYSQL_DATABASE}_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9]{8}\.sql\.gz$ ]] || continue
+        modified=$(stat -c %Y -- "$file")
+        if (( modified < cutoff )); then
+            rm -- "$file"
+            removed=$((removed + 1))
+        fi
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MYSQL_DATABASE}_*.sql.gz" -print0)
+    log INFO "retention completed: days=$RETENTION_DAYS removed=$removed"
+}
+
+backup() {
+    local final_file stale
+    load_config
+    lock_operation
+    # Leftovers from SIGKILL/power loss are safe to remove only after taking the lock.
+    while IFS= read -r -d '' stale; do
+        if [[ "${stale##*/}" =~ ^${MYSQL_DATABASE}_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9]{8}\.sql\.gz\.partial$ ]]; then
+            rm -- "$stale"
+        fi
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${MYSQL_DATABASE}_*.sql.gz.partial" -print0)
+
+    partial_file=$(mktemp "$BACKUP_DIR/${MYSQL_DATABASE}_$(date -u +%Y%m%dT%H%M%SZ)_XXXXXXXX.sql.gz.partial")
+    final_file=${partial_file%.partial}
+    log INFO "starting database=$MYSQL_DATABASE"
+    failure_message="dump/compression failed; no archive published and retention skipped (check connectivity and backup grants)"
+    {
+        printf -- '-- inat-mysql-backup-v1\n-- source-database: %s\n' "$MYSQL_DATABASE"
+        # No --databases: do not embed CREATE DATABASE/USE for the operational DB.
+        MYSQL_PWD="$MYSQL_BACKUP_PASSWORD" mysqldump --no-defaults --protocol=TCP \
+            --host="$MYSQL_BACKUP_HOST" --port="$MYSQL_BACKUP_PORT" --user="$MYSQL_BACKUP_USERNAME" \
+            --single-transaction --quick --routines --events --triggers --hex-blob \
+            --no-tablespaces --set-gtid-purged=OFF --column-statistics=0 \
+            --skip-add-drop-table --default-character-set=utf8mb4 \
+            "$MYSQL_DATABASE" 2>"$work_dir/dump.err"
+    } | gzip -c >"$partial_file" 2>"$work_dir/gzip.err"
+    failure_message="gzip validation failed; no archive published and retention skipped"
+    gzip -t -- "$partial_file" 2>"$work_dir/gzip.err"
+    failure_message="unable to publish archive; retention skipped"
+    chmod 0600 -- "$partial_file"
+    mv -- "$partial_file" "$final_file"
+    partial_file=
+    log INFO "archive published: ${final_file##*/} bytes=$(stat -c %s -- "$final_file")"
+    failure_message="archive published but retention cleanup failed"
+    prune_backups
+    log INFO "backup completed: ${final_file##*/}"
+}
+
+validate_dump() {
+    local archive=$1 header source_line
+    [[ -f "$archive" && ! -L "$archive" && "$archive" == *.sql.gz ]] \
+        || die "restore requires a regular .sql.gz file (symlinks/partial files refused)"
+    failure_message="invalid or truncated gzip archive; nothing imported"
+    gzip -t -- "$archive" 2>"$work_dir/gzip.err"
+    failure_message="unable to decompress archive; nothing imported (check free temporary space)"
+    gzip -dc -- "$archive" >"$work_dir/restore.sql" 2>"$work_dir/gzip.err"
+    [[ -s "$work_dir/restore.sql" ]] || die "empty SQL archive; nothing imported"
+    { read -r header; read -r source_line; } <"$work_dir/restore.sql"
+    [[ "$header" == '-- inat-mysql-backup-v1' && "$source_line" == "-- source-database: $MYSQL_DATABASE" ]] \
+        || die "archive was not produced by this tool for the configured operational database"
+    # Defense against accidentally importing --databases/--all-databases dumps.
+    # This is not a SQL sandbox: restore only trusted archives produced by this tool.
+    if grep -Eiq '^[[:space:]]*(/\*![0-9]+[[:space:]]+)?(USE[[:space:]]|((CREATE|DROP|ALTER)[[:space:]]+DATABASE[[:space:]]))' "$work_dir/restore.sql"; then
+        die "SQL changes/selects a database explicitly; nothing imported"
+    fi
+}
+
+restore() {
+    [[ $# == 2 ]] || die "usage: mysql-backup restore /backups/file.sql.gz empty_destination"
+    local archive=$1 target=$2 exists objects scheduler
+    load_config
+    database_name "$target"
+    [[ "${target,,}" != "${MYSQL_DATABASE,,}" ]] || die "refusing to restore into the operational database"
+    lock_operation
+    validate_dump "$archive"
+    failure_message="unable to inspect destination (check restore connection and privileges); nothing imported"
+    exists=$(query "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$target'")
+    [[ "$exists" == 1 ]] || die "destination database must already exist; nothing imported"
+    objects=$(query "SELECT
+      (SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$target') +
+      (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='$target') +
+      (SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='$target') +
+      (SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='$target')")
+    [[ "$objects" == 0 ]] || die "destination database is not empty; nothing imported"
+    scheduler=$(query 'SELECT @@GLOBAL.event_scheduler')
+    [[ "$scheduler" != ON ]] || die "event_scheduler is ON; restore on an isolated MySQL with it OFF to avoid running restored events"
+
+    log INFO "starting destination=$target archive=${archive##*/}"
+    failure_message="import failed; destination=$target may be partially populated; inspect it before any retry"
+    # Do not use --force. A SQL error stops the import. Binary mode disables local
+    # client commands; local_infile prevents LOAD DATA LOCAL from reading files.
+    MYSQL_PWD="$MYSQL_RESTORE_PASSWORD" mysql --no-defaults --protocol=TCP \
+        --host="$MYSQL_RESTORE_HOST" --port="$MYSQL_RESTORE_PORT" --user="$MYSQL_RESTORE_USERNAME" \
+        --connect-timeout=10 --default-character-set=utf8mb4 --binary-mode --local-infile=0 \
+        --database="$target" <"$work_dir/restore.sql" \
+        >"$work_dir/import.out" 2>"$work_dir/import.err"
+    log INFO "restore completed: destination=$target; verify data manually; application connection unchanged"
+}
+
+schedule() {
+    load_config
+    log INFO "daily schedule=02:15 host_timezone=$(date +%z); retention_days=$RETENTION_DAYS; backup_dir=$BACKUP_DIR"
+    exec /usr/sbin/cron -f
+}
+
+cron_backup() {
+    # cron removes most environment variables. Recover only backup settings from
+    # the container's initial environment; no second configuration file is needed.
+    local setting
+    while IFS= read -r -d '' setting; do
+        case "$setting" in
+            MYSQL_BACKUP_*=*|MYSQL_RESTORE_*=*) export "$setting" ;;
+        esac
+    done </proc/1/environ
+    operation=backup
+    backup
+}
+
+case "$operation" in
+    check) [[ $# == 1 ]] || die "usage: mysql-backup check"; load_config; log INFO "configuration valid; backup storage ready" ;;
+    backup) shift; [[ $# == 0 ]] || die "usage: mysql-backup backup"; backup ;;
+    cron-backup) [[ $# == 1 ]] || die "usage: mysql-backup cron-backup"; cron_backup ;;
+    restore) shift; restore "$@" ;;
+    schedule) [[ $# -le 1 ]] || die "usage: mysql-backup schedule"; schedule ;;
+    *) die "usage: mysql-backup {check|schedule|backup|restore /backups/file.sql.gz empty_destination}" ;;
+esac

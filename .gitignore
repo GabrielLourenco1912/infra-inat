@@ -43,6 +43,7 @@ Desktop.ini
 *.bak
 *~
 /data/files/
+/data/backups/
 
 # Java / Maven
 **/target/

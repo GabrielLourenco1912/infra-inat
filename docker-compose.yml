@@ -20,6 +20,55 @@ services:
       retries: 10
       start_period: 30s
 
+  mysql-backup:
+    build:
+      context: ./docker/mysql-backup
+    image: ghcr.io/gabriellourenco1912/inat-mysql-backup
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_BACKUP_DATABASE: ${DB_NAME:-inat_ead}
+      MYSQL_BACKUP_HOST: ${MYSQL_BACKUP_HOST:-mysql}
+      MYSQL_BACKUP_PORT: ${MYSQL_BACKUP_PORT:-3306}
+      MYSQL_BACKUP_USERNAME: ${MYSQL_BACKUP_USERNAME:-${DB_USERNAME:-inat_ead}}
+      MYSQL_BACKUP_PASSWORD: ${MYSQL_BACKUP_PASSWORD:-${DB_PASSWORD:?Defina DB_PASSWORD no arquivo .env}}
+      MYSQL_BACKUP_DIR: /backups
+      MYSQL_BACKUP_RETENTION_DAYS: ${MYSQL_BACKUP_RETENTION_DAYS:-30}
+      MYSQL_RESTORE_HOST: ${MYSQL_RESTORE_HOST:-}
+      MYSQL_RESTORE_PORT: ${MYSQL_RESTORE_PORT:-}
+      MYSQL_RESTORE_USERNAME: ${MYSQL_RESTORE_USERNAME:-}
+      MYSQL_RESTORE_PASSWORD: ${MYSQL_RESTORE_PASSWORD:-}
+    volumes:
+      - type: bind
+        source: ${MYSQL_BACKUP_HOST_DIR:-/var/backups/inat/mysql}
+        target: /backups
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /etc/localtime
+        target: /etc/localtime
+        read_only: true
+    tmpfs:
+      - /tmp:mode=0700
+      - /run:mode=0755
+    stop_grace_period: 1m
+    healthcheck:
+      test: [CMD-SHELL, 'test -s /run/crond.pid && kill -0 $$(cat /run/crond.pid)']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
   backend:
     build:
       context: .
