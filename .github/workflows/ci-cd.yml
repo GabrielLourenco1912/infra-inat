@@ -324,9 +324,12 @@ jobs:
           "${compose[@]}" pull backend frontend mysql-backup
           # Confere as variáveis do .env e o bind mount usando a imagem publicada,
           # antes de atualizar os containers. Não conecta nem altera o banco.
-          "${compose[@]}" run --rm --no-deps mysql-backup check
+          echo "Validando configuração e armazenamento do backup..."
+          "${compose[@]}" run --rm --no-deps -T mysql-backup check < /dev/null
+          echo "Iniciando serviços da aplicação..."
           "${compose[@]}" up --detach --no-build --wait --wait-timeout 180
 
+          echo "Verificando frontend e backend..."
           # O Node já está na imagem do frontend; a sondagem não exige curl na VPS.
           for attempt in $(seq 1 30); do
             if "${compose[@]}" exec -T frontend node -e '
@@ -334,7 +337,7 @@ jobs:
                 fetch("http://127.0.0.1:3000/", { signal: AbortSignal.timeout(5000) }).then(r => r.ok),
                 fetch("http://backend:8080/api/roles", { signal: AbortSignal.timeout(5000) }).then(r => [200, 401, 403].includes(r.status))
               ]).then(results => process.exit(results.every(Boolean) ? 0 : 1)).catch(() => process.exit(1));
-            '; then
+            ' < /dev/null; then
               "${compose[@]}" ps
               exit 0
             fi
