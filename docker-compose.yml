@@ -144,6 +144,7 @@ services:
       - backend
     environment:
       BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8080}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:3000}
       FRONTEND_AUTH_COOKIE_SECURE: ${FRONTEND_AUTH_COOKIE_SECURE:-}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
