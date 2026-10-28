@@ -1,4 +1,4 @@
-name: CI/CD
+name: CI e publicação de imagens
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-cd-${{ github.ref }}
+  group: ci-images-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -22,26 +22,14 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 # Configure no repositório principal:
-# - APP_ID: variável com o ID da GitHub App.
-# - APP_PRIVATE_KEY: secret com o conteúdo completo da chave privada PEM da app.
-# A app deve ter Contents: read e estar instalada no repositório principal e nos
-# submódulos backend-inat, frontend-inat e mobile-inat da mesma organização.
-# Cada job gera seu próprio token de instalação para o checkout.
-# O push no GHCR e o pull na VPS usam o GITHUB_TOKEN temporário de cada job,
-# com packages: write na publicação e packages: read no deploy.
+# - SUBMODULES_TOKEN: secret com um PAT com leitura do repositório principal e
+# dos submódulos backend-inat, frontend-inat e mobile-inat. Para um PAT
+# fine-grained, selecione esses repositórios e a permissão Contents: read.
+# O PAT é usado apenas no checkout dos submódulos. O push no GHCR usa o
+# GITHUB_TOKEN temporário do job, com packages: write.
 # Os pacotes devem estar vinculados a este repositório ou conceder acesso a ele
-# em Manage Actions access. O token da app própria é usado apenas no checkout.
-# - SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, SSH_KNOWN_HOSTS e DEPLOY_PATH: secrets da VPS.
-# - SSH_PORT (opcional): secret; padrão 22.
-# - DEPLOY_ENABLED: variável com "true" para habilitar o deploy automático.
+# em Manage Actions access.
 # - NEXT_PUBLIC_INTERNAL_SYSTEM_URL (opcional): variável usada no build do Next.js.
-# A VPS deve ter Docker/Compose, acesso ao Docker para SSH_USER e um .env em
-# DEPLOY_PATH, preenchido conforme .env.example. A chave SSH deve ser dedicada
-# ao deploy, sem passphrase; SSH_KNOWN_HOSTS contém a entrada completa do
-# known_hosts da VPS (host e chave pública).
-# Configure também o backup no mesmo .env, com modo 0600, conforme
-# docker/mysql-backup/README.md. Não há um segundo arquivo de configuração.
-# O diretório de artefatos MYSQL_BACKUP_HOST_DIR é criado pelo bind mount no deploy.
 
 jobs:
   backend:
@@ -52,25 +40,11 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - name: Gerar token da GitHub App para os submódulos
-        id: app-token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            backend-inat
-            frontend-inat
-            mobile-inat
-          permission-contents: read
-
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.SUBMODULES_TOKEN }}
           persist-credentials: false
 
       - name: Configurar Java
@@ -94,25 +68,11 @@ jobs:
     env:
       NEXT_PUBLIC_INTERNAL_SYSTEM_URL: ${{ vars.NEXT_PUBLIC_INTERNAL_SYSTEM_URL }}
     steps:
-      - name: Gerar token da GitHub App para os submódulos
-        id: app-token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            backend-inat
-            frontend-inat
-            mobile-inat
-          permission-contents: read
-
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.SUBMODULES_TOKEN }}
           persist-credentials: false
 
       - name: Configurar Node
@@ -157,25 +117,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Gerar token da GitHub App para os submódulos
-        id: app-token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ${{ github.event.repository.name }}
-            backend-inat
-            frontend-inat
-            mobile-inat
-          permission-contents: read
-
       - name: Checkout dos commits dos submódulos
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.SUBMODULES_TOKEN }}
           persist-credentials: false
 
       - name: Configurar Buildx
@@ -235,116 +181,3 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=mysql-backup
           cache-to: type=gha,scope=mysql-backup,mode=max
-
-  deploy:
-    name: Deploy na VPS
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    needs: images
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
-    permissions:
-      contents: read
-      packages: read
-    env:
-      SSH_HOST: ${{ secrets.SSH_HOST }}
-      SSH_USER: ${{ secrets.SSH_USER }}
-      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
-      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-      GHCR_USERNAME: ${{ github.actor }}
-      GHCR_TOKEN: ${{ github.token }}
-    steps:
-      - name: Checkout do Compose
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Atualizar containers por SSH
-        shell: bash
-        run: |
-          set -euo pipefail
-          for setting in SSH_HOST SSH_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS DEPLOY_PATH; do
-            if [[ -z "${!setting}" ]]; then
-              echo "Configure o secret $setting antes de habilitar DEPLOY_ENABLED." >&2
-              exit 1
-            fi
-          done
-          [[ "$DEPLOY_PATH" = /* ]] || { echo "DEPLOY_PATH deve ser um caminho absoluto." >&2; exit 1; }
-
-          deploy_local=$(mktemp -d)
-          deploy_remote=""
-          cleanup() {
-            if [[ -n "$deploy_remote" ]]; then
-              ssh "${ssh_options[@]}" "$ssh_target" "rm -rf -- $deploy_remote_quoted" || true
-            fi
-            rm -rf -- "$deploy_local"
-          }
-          trap cleanup EXIT
-
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$deploy_local/key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$deploy_local/known_hosts"
-          chmod 600 "$deploy_local/key" "$deploy_local/known_hosts"
-          ssh_options=(-i "$deploy_local/key" -p "$SSH_PORT"
-            -o "UserKnownHostsFile=$deploy_local/known_hosts" -o StrictHostKeyChecking=yes
-            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=20)
-          ssh_target="$SSH_USER@$SSH_HOST"
-
-          cp docker-compose.yml "$deploy_local/docker-compose.yml"
-          printf 'services:\n  backend:\n    image: %s:sha-%s\n  frontend:\n    image: %s:sha-%s\n  mysql-backup:\n    image: %s:sha-%s\n' \
-            "$BACKEND_IMAGE" "$GITHUB_SHA" "$FRONTEND_IMAGE" "$GITHUB_SHA" "$BACKUP_IMAGE" "$GITHUB_SHA" \
-            > "$deploy_local/docker-compose.release.yml"
-          tar -czf "$deploy_local/release.tar.gz" -C "$deploy_local" \
-            docker-compose.yml docker-compose.release.yml
-
-          deploy_remote_candidate=$(ssh "${ssh_options[@]}" "$ssh_target" 'mktemp -d /tmp/inat-deploy.XXXXXXXX')
-          [[ "$deploy_remote_candidate" =~ ^/tmp/inat-deploy\.[[:alnum:]]+$ ]] || exit 1
-          printf -v deploy_remote_quoted '%q' "$deploy_remote_candidate"
-          deploy_remote=$deploy_remote_candidate
-          ssh "${ssh_options[@]}" "$ssh_target" "cat > $deploy_remote_quoted/release.tar.gz" \
-            < "$deploy_local/release.tar.gz"
-
-          printf -v registry_user_quoted '%q' "$GHCR_USERNAME"
-          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" "$ssh_target" \
-            "DOCKER_CONFIG=$deploy_remote_quoted/docker docker login ghcr.io --username $registry_user_quoted --password-stdin"
-
-          printf -v deploy_command 'bash -s -- %q %q' "$DEPLOY_PATH" "$deploy_remote"
-          ssh "${ssh_options[@]}" "$ssh_target" "$deploy_command" <<'REMOTE'
-          set -euo pipefail
-          deploy_path=$1
-          deploy_remote=$2
-          trap 'rm -rf -- "$deploy_remote"' EXIT
-          export DOCKER_CONFIG="$deploy_remote/docker"
-          cd "$deploy_path"
-          test -f .env || { echo "Crie o .env da aplicação em DEPLOY_PATH." >&2; exit 1; }
-          chmod go-rwx .env
-          tar -xzf "$deploy_remote/release.tar.gz" --no-same-owner
-          compose=(docker compose --env-file .env -f docker-compose.yml -f docker-compose.release.yml)
-          "${compose[@]}" config --quiet
-          "${compose[@]}" pull backend frontend mysql-backup
-          # Confere as variáveis do .env e o bind mount usando a imagem publicada,
-          # antes de atualizar os containers. Não conecta nem altera o banco.
-          echo "Validando configuração e armazenamento do backup..."
-          "${compose[@]}" run --rm --no-deps -T mysql-backup check < /dev/null
-          echo "Iniciando serviços da aplicação..."
-          "${compose[@]}" up --detach --no-build --wait --wait-timeout 180
-
-          echo "Verificando frontend e backend..."
-          # O Node já está na imagem do frontend; a sondagem não exige curl na VPS.
-          for attempt in $(seq 1 30); do
-            if "${compose[@]}" exec -T frontend node -e '
-              Promise.all([
-                fetch("http://127.0.0.1:3000/", { signal: AbortSignal.timeout(5000) }).then(r => r.ok),
-                fetch("http://backend:8080/api/roles", { signal: AbortSignal.timeout(5000) }).then(r => [200, 401, 403].includes(r.status))
-              ]).then(results => process.exit(results.every(Boolean) ? 0 : 1)).catch(() => process.exit(1));
-            ' < /dev/null; then
-              "${compose[@]}" ps
-              exit 0
-            fi
-            echo "Aguardando frontend e backend ($attempt/30)..."
-            sleep 5
-          done
-          "${compose[@]}" ps
-          echo "Frontend ou backend não respondeu após a atualização." >&2
-          exit 1
-          REMOTE
