@@ -16,9 +16,9 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
-  BACKEND_IMAGE: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-back
-  FRONTEND_IMAGE: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-front
-  BACKUP_IMAGE: ghcr.io/inat-instituto-nacional-do-trabalhador/inat-mysql-backup
+  BACKEND_IMAGE: ghcr.io/gabriellourenco1912/inat-back
+  FRONTEND_IMAGE: ghcr.io/gabriellourenco1912/inat-front
+  BACKUP_IMAGE: ghcr.io/gabriellourenco1912/inat-mysql-backup
   NEXT_TELEMETRY_DISABLED: "1"
 
 # Configure no repositório principal:
